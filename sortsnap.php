@@ -27,6 +27,19 @@ class SortSnap {
         add_action('admin_menu', array($this, 'add_admin_menu'));
         add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_scripts'));
         add_action('wp_ajax_sortsnap_save_order', array($this, 'save_post_order'));
+        
+        // Add column to post type admin pages
+        add_filter('manage_posts_columns', array($this, 'add_order_column'));
+        add_action('manage_posts_custom_column', array($this, 'display_order_column'), 10, 2);
+        
+        // Add sorting capability to admin columns
+        add_filter('manage_edit-post_sortable_columns', array($this, 'make_order_column_sortable'));
+        
+        // Apply custom sorting to admin screen
+        add_action('pre_get_posts', array($this, 'apply_custom_order_to_admin'));
+        
+        // Apply sortable to post list tables
+        add_action('admin_footer', array($this, 'add_sortable_script_to_list_tables'));
     }
 
     /**
@@ -64,26 +77,19 @@ class SortSnap {
      * Enqueue admin scripts
      */
     public function enqueue_admin_scripts($hook) {
-        // Only load on our plugin page
-        if ($hook != 'toplevel_page_sortsnap') {
-            return;
+        // Original SortSnap page scripts
+        if ($hook == 'toplevel_page_sortsnap') {
+            wp_enqueue_script('jquery-ui-core');
+            wp_enqueue_script('jquery-ui-sortable');
+            
+            wp_enqueue_style('sortsnap-admin', SORTSNAP_PLUGIN_URL . 'assets/css/admin.css', array(), SORTSNAP_VERSION);
+            wp_enqueue_script('sortsnap-admin', SORTSNAP_PLUGIN_URL . 'assets/js/admin.js', array('jquery', 'jquery-ui-sortable'), SORTSNAP_VERSION, true);
+            
+            wp_localize_script('sortsnap-admin', 'sortsnap', array(
+                'ajax_url' => admin_url('admin-ajax.php'),
+                'nonce' => wp_create_nonce('sortsnap_nonce')
+            ));
         }
-
-        // jQuery UI
-        wp_enqueue_script('jquery-ui-core');
-        wp_enqueue_script('jquery-ui-sortable');
-        
-        // CSS
-        wp_enqueue_style('sortsnap-admin', SORTSNAP_PLUGIN_URL . 'assets/css/admin.css', array(), SORTSNAP_VERSION);
-        
-        // JS
-        wp_enqueue_script('sortsnap-admin', SORTSNAP_PLUGIN_URL . 'assets/js/admin.js', array('jquery', 'jquery-ui-sortable'), SORTSNAP_VERSION, true);
-        
-        // Localize script
-        wp_localize_script('sortsnap-admin', 'sortsnap', array(
-            'ajax_url' => admin_url('admin-ajax.php'),
-            'nonce' => wp_create_nonce('sortsnap_nonce')
-        ));
     }
 
     /**
@@ -141,6 +147,176 @@ class SortSnap {
 
         return get_posts($args);
     }
+    
+    /**
+     * Add order column to post list tables
+     */
+    public function add_order_column($columns) {
+        $new_columns = array();
+        
+        // Insert order column after checkbox but before title
+        foreach ($columns as $key => $value) {
+            if ($key === 'cb') {
+                $new_columns[$key] = $value;
+                $new_columns['sortsnap_order'] = __('Order', 'sortsnap');
+            } else {
+                $new_columns[$key] = $value;
+            }
+        }
+        
+        return $new_columns;
+    }
+    
+    /**
+     * Display order value in the column
+     */
+    public function display_order_column($column, $post_id) {
+        if ($column === 'sortsnap_order') {
+            $order = get_post_meta($post_id, '_sortsnap_order', true);
+            echo !empty($order) ? intval($order) : '-';
+        }
+    }
+    
+    /**
+     * Make order column sortable
+     */
+    public function make_order_column_sortable($columns) {
+        $columns['sortsnap_order'] = 'sortsnap_order';
+        return $columns;
+    }
+    
+    /**
+     * Apply custom sorting to admin screen
+     */
+    public function apply_custom_order_to_admin($query) {
+        if (!is_admin()) {
+            return;
+        }
+        
+        $screen = get_current_screen();
+        
+        // Only apply to post type list screens
+        if ($screen && $screen->base === 'edit') {
+            // If sorting by our column or no specific sorting selected
+            if (!isset($_GET['orderby']) || $_GET['orderby'] === 'sortsnap_order') {
+                $query->set('meta_key', '_sortsnap_order');
+                $query->set('orderby', 'meta_value_num');
+                $query->set('order', 'ASC');
+            }
+        }
+    }
+    
+    /**
+     * Add sortable script to WP post list tables
+     */
+    public function add_sortable_script_to_list_tables() {
+        $screen = get_current_screen();
+        
+        // Only load on post list screens
+        if ($screen && $screen->base === 'edit' && $screen->post_type) {
+            ?>
+            <style>
+                .wp-list-table tbody {
+                    cursor: move;
+                }
+                .wp-list-table tr.ui-sortable-helper {
+                    background: #e8f0fe !important;
+                    border: 1px solid #c3c4c7 !important;
+                    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.15);
+                }
+                .wp-list-table .ui-sortable-placeholder {
+                    visibility: visible !important;
+                    background: #f7f7f7;
+                    height: 50px;
+                    border: 1px dashed #c3c4c7;
+                }
+                .sortsnap-loading-overlay {
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    right: 0;
+                    bottom: 0;
+                    background: rgba(255, 255, 255, 0.7);
+                    z-index: 999999;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                }
+                .sortsnap-loading-spinner {
+                    width: 50px;
+                    height: 50px;
+                    border: 5px solid #f3f3f3;
+                    border-top: 5px solid #0073aa;
+                    border-radius: 50%;
+                    animation: spin 1s linear infinite;
+                }
+                @keyframes spin {
+                    0% { transform: rotate(0deg); }
+                    100% { transform: rotate(360deg); }
+                }
+            </style>
+            <script>
+            jQuery(document).ready(function($) {
+                // Make the table body sortable
+                $('.wp-list-table tbody').sortable({
+                    items: 'tr',
+                    cursor: 'move',
+                    placeholder: 'ui-sortable-placeholder',
+                    update: function(event, ui) {
+                        // Show loading overlay
+                        $('body').append('<div class="sortsnap-loading-overlay"><div class="sortsnap-loading-spinner"></div></div>');
+                        
+                        // Collect all post IDs in their new order
+                        const postIds = [];
+                        $(this).find('tr').each(function() {
+                            const postId = $(this).find('input[name="post[]"]').val();
+                            if (postId) {
+                                postIds.push(postId);
+                            }
+                        });
+                        
+                        // Save the order via AJAX
+                        $.ajax({
+                            url: ajaxurl,
+                            type: 'POST',
+                            data: {
+                                action: 'sortsnap_save_order',
+                                post_ids: postIds,
+                                nonce: '<?php echo wp_create_nonce('sortsnap_nonce'); ?>'
+                            },
+                            success: function(response) {
+                                $('.sortsnap-loading-overlay').remove();
+                                
+                                if (response.success) {
+                                    // Add success notice
+                                    const $notice = $('<div class="notice notice-success is-dismissible"><p>Post order saved successfully.</p></div>');
+                                    $('#wpbody-content > .wrap > .wp-header-end').after($notice);
+                                    
+                                    // Remove notice after delay
+                                    setTimeout(function() {
+                                        $notice.fadeOut(300, function() { $(this).remove(); });
+                                    }, 3000);
+                                } else {
+                                    // Show error
+                                    const $notice = $('<div class="notice notice-error is-dismissible"><p>Error: ' + (response.data || 'Failed to save order.') + '</p></div>');
+                                    $('#wpbody-content > .wrap > .wp-header-end').after($notice);
+                                }
+                            },
+                            error: function() {
+                                $('.sortsnap-loading-overlay').remove();
+                                
+                                // Show error notice
+                                const $notice = $('<div class="notice notice-error is-dismissible"><p>Error: Could not connect to the server.</p></div>');
+                                $('#wpbody-content > .wrap > .wp-header-end').after($notice);
+                            }
+                        });
+                    }
+                });
+            });
+            </script>
+            <?php
+        }
+    }
 }
 
 // Initialize the plugin
@@ -168,4 +344,3 @@ function sortsnap_activate() {
         $order++;
     }
 }
-
