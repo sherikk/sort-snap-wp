@@ -189,19 +189,28 @@ class SortSnap {
      * Apply custom sorting to admin screen
      */
     public function apply_custom_order_to_admin($query) {
+        // Only apply in admin area
         if (!is_admin()) {
             return;
         }
         
-        $screen = get_current_screen();
+        // Check if we're in a WP_Query which will be affected
+        if (!$query->is_main_query()) {
+            return;
+        }
         
-        // Only apply to post type list screens
-        if ($screen && $screen->base === 'edit') {
-            // If sorting by our column or no specific sorting selected
-            if (!isset($_GET['orderby']) || $_GET['orderby'] === 'sortsnap_order') {
-                $query->set('meta_key', '_sortsnap_order');
-                $query->set('orderby', 'meta_value_num');
-                $query->set('order', 'ASC');
+        // Only apply to post type admin screens by checking if function exists
+        if (function_exists('get_current_screen')) {
+            $screen = get_current_screen();
+            
+            // Only apply to post type list screens
+            if ($screen && $screen->base === 'edit') {
+                // If sorting by our column or no specific sorting selected
+                if (!isset($_GET['orderby']) || $_GET['orderby'] === 'sortsnap_order') {
+                    $query->set('meta_key', '_sortsnap_order');
+                    $query->set('orderby', 'meta_value_num');
+                    $query->set('order', 'ASC');
+                }
             }
         }
     }
@@ -210,6 +219,11 @@ class SortSnap {
      * Add sortable script to WP post list tables
      */
     public function add_sortable_script_to_list_tables() {
+        // Only run in admin area and if function exists
+        if (!is_admin() || !function_exists('get_current_screen')) {
+            return;
+        }
+        
         $screen = get_current_screen();
         
         // Only load on post list screens
